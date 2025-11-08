@@ -1,0 +1,7 @@
+test_data/*
+test_data_master/*
+lz4/*
+output/*
+snappy/*
+tiff/*
+build/*
