@@ -75,6 +75,10 @@ int main(int argc, char *argv[])
     std::cout << "Output directory: " << outputDir << std::endl;
     std::cout << "File pattern: " << basePattern << std::endl;
     std::cout << "Set size: " << setSize << std::endl;
+
+    // ログファイルを出力ディレクトリに作成
+    initLogFile(outputDir);
+
     std::cout << "\nStarting monitor...\n"
               << std::endl;
 
@@ -85,9 +89,12 @@ int main(int argc, char *argv[])
     catch (const std::exception &e)
     {
         std::cerr << "Fatal error: " << e.what() << std::endl;
+        closeLogFile();
         return 1;
     }
 
+    // 正常終了時にログファイルを閉じる
+    closeLogFile();
     return 0;
 }
 
