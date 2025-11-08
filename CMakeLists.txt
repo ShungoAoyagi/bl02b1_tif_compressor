@@ -56,7 +56,7 @@ set(SRC_DECOMPRESS_FILES
 )
 
 # 実行ファイルの作成（圧縮プログラム）
-add_executable(bl02b1_tif_compressor main.cpp ${SRC_COMMON_FILES} ${SRC_COMPRESS_FILES})
+add_executable(bl02b1_tif_compressor compress.cpp ${SRC_COMMON_FILES} ${SRC_COMPRESS_FILES})
 
 # ライブラリのリンク
 target_link_libraries(bl02b1_tif_compressor lz4_static snappy Threads::Threads)

@@ -12,9 +12,9 @@ int main(int argc, char *argv[])
     std::string baseSuffix = "_##_#####.tif";
     int setSize = 100;
     int pollInterval = 1;               // Poll interval in seconds
-    const int maxThreads = 8;           // Maximum number of threads (fixed)
+    const int maxThreads = 12;           // Maximum number of threads (fixed)
     const int maxProcesses = 1;         // Maximum number of processes (fixed)
-    const int lz4Acceleration = 4;      // LZ4 acceleration parameter (1=default, higher=faster but lower compression)
+    const int lz4Acceleration = 8;      // LZ4 acceleration parameter (1=default, higher=faster but lower compression)
     const bool deleteAfter = true;      // Always delete source files after processing
     const bool stopOnInterrupt = false; // Never stop on Enter key
 
