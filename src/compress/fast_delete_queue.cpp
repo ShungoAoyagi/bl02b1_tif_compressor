@@ -163,74 +163,96 @@ bool WindowsFastDeleteQueue::isSafeToDelete(const std::string &filePath)
 
 void WindowsFastDeleteQueue::worker()
 {
-    while (running)
+    try
     {
-        DeleteTask task;
-
+        while (running)
         {
-            std::unique_lock<std::mutex> lock(queue_mutex);
-            if (tasks.empty())
+            try
             {
-                cv.wait_for(lock, std::chrono::seconds(1), [this]
-                            { return !tasks.empty() || !running; });
-                if (!running && tasks.empty())
-                    break;
-                if (tasks.empty())
-                    continue;
-            }
+                DeleteTask task;
 
-            task = tasks.front();
-            tasks.pop();
-        }
-
-        // 削除対象ファイルのフィルタリング
-        std::vector<std::string> safeFilesToDelete;
-
-        for (const auto &filePath : task.files)
-        {
-            // 最初のファイルは削除しない
-            if (filePath == task.firstFile)
-            {
-                continue;
-            }
-
-            // 安全性チェック
-            if (isSafeToDelete(filePath))
-            {
-                safeFilesToDelete.push_back(filePath);
-            }
-        }
-
-        // バッチ削除を実行
-        if (!safeFilesToDelete.empty())
-        {
-            bool success = false;
-            if (safeFilesToDelete.size() > 1)
-            {
-                success = batchDeleteFiles(safeFilesToDelete);
-                if (!success)
                 {
-                    LOG("Batch delete failed, falling back to individual deletion");
-                    int successCount = 0;
-
-                    for (const auto &filePath : safeFilesToDelete)
+                    std::unique_lock<std::mutex> lock(queue_mutex);
+                    if (tasks.empty())
                     {
-                        if (deleteSingleFile(filePath))
-                        {
-                            successCount++;
-                        }
+                        cv.wait_for(lock, std::chrono::seconds(1), [this]
+                                    { return !tasks.empty() || !running; });
+                        if (!running && tasks.empty())
+                            break;
+                        if (tasks.empty())
+                            continue;
+                    }
+
+                    task = tasks.front();
+                    tasks.pop();
+                }
+
+                // 削除対象ファイルのフィルタリング
+                std::vector<std::string> safeFilesToDelete;
+
+                for (const auto &filePath : task.files)
+                {
+                    // 最初のファイルは削除しない
+                    if (filePath == task.firstFile)
+                    {
+                        continue;
+                    }
+
+                    // 安全性チェック
+                    if (isSafeToDelete(filePath))
+                    {
+                        safeFilesToDelete.push_back(filePath);
                     }
                 }
+
+                // バッチ削除を実行
+                if (!safeFilesToDelete.empty())
+                {
+                    bool success = false;
+                    if (safeFilesToDelete.size() > 1)
+                    {
+                        success = batchDeleteFiles(safeFilesToDelete);
+                        if (!success)
+                        {
+                            LOG("Batch delete failed, falling back to individual deletion");
+                            int successCount = 0;
+
+                            for (const auto &filePath : safeFilesToDelete)
+                            {
+                                if (deleteSingleFile(filePath))
+                                {
+                                    successCount++;
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        deleteSingleFile(safeFilesToDelete[0]);
+                    }
+                }
+                else
+                {
+                    LOG("No files to delete after filtering");
+                }
             }
-            else
+            catch (const std::exception &e)
             {
-                deleteSingleFile(safeFilesToDelete[0]);
+                LOG("Error in delete worker loop: " << e.what());
+                // エラーが発生しても処理を継続
+                std::this_thread::sleep_for(std::chrono::seconds(1));
             }
         }
-        else
-        {
-            LOG("No files to delete after filtering");
-        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG("Fatal error in delete worker thread: " << e.what());
+        running = false;
+    }
+    catch (...)
+    {
+        LOG("Unknown fatal error in delete worker thread");
+        running = false;
     }
 }
 

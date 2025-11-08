@@ -4,6 +4,26 @@
 #include <cstring>
 #include <algorithm>
 #include <map>
+#include <chrono>
+
+// file_time_type を int64_t（ミリ秒単位のエポック時刻）に変換
+int64_t MemoryMappedFileIndex::fileTimeToInt64(const fs::file_time_type &ftime)
+{
+    // file_time_typeをsystem_clockに変換してエポック秒を取得
+    auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+        ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now()
+    );
+    return std::chrono::duration_cast<std::chrono::milliseconds>(sctp.time_since_epoch()).count();
+}
+
+// int64_t（ミリ秒単位のエポック時刻）を file_time_type に変換
+fs::file_time_type MemoryMappedFileIndex::int64ToFileTime(int64_t timestamp)
+{
+    auto sysTime = std::chrono::system_clock::time_point(std::chrono::milliseconds(timestamp));
+    auto fileTime = fs::file_time_type::clock::now() + 
+                   (sysTime - std::chrono::system_clock::now());
+    return fileTime;
+}
 
 MemoryMappedFileIndex::MemoryMappedFileIndex(const std::string &basePath)
     : indexFilePath(basePath + "/.file_index.bin"), modified(false)
@@ -31,7 +51,7 @@ void MemoryMappedFileIndex::addFile(const std::string &path, int run, int fileNu
         auto &entry = entries[it->second];
         entry.run = run;
         entry.fileNumber = fileNumber;
-        entry.lastModified = modTime;
+        entry.lastModifiedTime = fileTimeToInt64(modTime); // int64_tに変換して保存
         entry.processed = isProcessed;
     }
     else
@@ -42,7 +62,7 @@ void MemoryMappedFileIndex::addFile(const std::string &path, int run, int fileNu
         newEntry.fileNumber = fileNumber;
         strncpy(newEntry.filePath, path.c_str(), sizeof(newEntry.filePath) - 1);
         newEntry.filePath[sizeof(newEntry.filePath) - 1] = '\0';
-        newEntry.lastModified = modTime;
+        newEntry.lastModifiedTime = fileTimeToInt64(modTime); // int64_tに変換して保存
         newEntry.processed = isProcessed;
 
         // エントリを追加
@@ -59,8 +79,9 @@ bool MemoryMappedFileIndex::hasFileChanged(const std::string &path, const fs::fi
     auto it = pathToIndexMap.find(path);
     if (it != pathToIndexMap.end())
     {
-        // インデックス内に存在すれば、更新時刻を比較
-        return entries[it->second].lastModified != currentModTime;
+        // インデックス内に存在すれば、更新時刻を比較（int64_tに変換して比較）
+        int64_t currentTime = fileTimeToInt64(currentModTime);
+        return entries[it->second].lastModifiedTime != currentTime;
     }
     // インデックスに存在しなければ、変更あり（新規ファイル）
     return true;

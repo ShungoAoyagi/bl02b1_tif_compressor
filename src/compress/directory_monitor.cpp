@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <iostream>
 #include <atomic>
+#include <future>
 
 IndexedDirectoryMonitor::IndexedDirectoryMonitor(const std::string &watchDir, const std::string &basePattern, int setSize)
     : running(true), newDataAvailable(false)
@@ -40,24 +41,47 @@ void IndexedDirectoryMonitor::scannerWorker()
 {
     bool firstScan = true;
 
-    while (running)
+    try
     {
-        if (firstScan)
+        while (running)
         {
-            performFullScan();
-            firstScan = false;
-            LOG("Initial full scan completed. Switching to incremental scanning only.");
-        }
-        else
-        {
-            performIncrementalScan();
-        }
+            try
+            {
+                if (firstScan)
+                {
+                    performFullScan();
+                    firstScan = false;
+                    LOG("Initial full scan completed. Switching to incremental scanning only.");
+                }
+                else
+                {
+                    performIncrementalScan();
+                }
 
-        // 1セットずつ効率的に取得（メモリ節約）
-        updateFileSets();
+                // 1セットずつ効率的に取得（メモリ節約）
+                updateFileSets();
 
-        // スキャン間隔を調整（ディスクI/Oを減らす）
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                // スキャン間隔を調整（ディスクI/Oを減らす）
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            }
+            catch (const std::exception &e)
+            {
+                LOG("Error in scanner worker loop: " << e.what());
+                // エラーが発生しても処理を継続するため、少し待機してから次のイテレーションへ
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG("Fatal error in scanner worker thread: " << e.what());
+        // スレッドが終了する前にrunningフラグをfalseにして、他のスレッドに通知
+        running = false;
+    }
+    catch (...)
+    {
+        LOG("Unknown fatal error in scanner worker thread");
+        running = false;
     }
 }
 
@@ -102,48 +126,67 @@ void IndexedDirectoryMonitor::performFullScan()
             
             threads.emplace_back([this, &entries, start, end, &indexMutex, &processedCount, &matchedCount]()
             {
-                for (size_t i = start; i < end; ++i)
+                try
                 {
-                    const auto &entry = entries[i];
-                    
-                    // ファイル名とパスを取得
-                    std::string filename = entry.path().filename().string();
-                    std::string filepath = entry.path().string();
-                    
-                    // ファイルの更新時刻を取得（並列実行可能）
-                    auto lastWriteTime = entry.last_write_time();
-                    
-                    // パターンに一致するか確認（並列実行可能）
-                    std::smatch matches;
-                    if (std::regex_match(filename, matches, filePattern) && matches.size() >= 3)
+                    for (size_t i = start; i < end; ++i)
                     {
-                        int run = std::stoi(matches[1].str());
-                        int fileNumber = std::stoi(matches[2].str());
-                        
-                        // インデックスへのアクセスは排他制御が必要
+                        try
                         {
-                            std::lock_guard<std::mutex> lock(indexMutex);
+                            const auto &entry = entries[i];
                             
-                            // ファイルが変更されているか確認
-                            if (fileIndex->hasFileChanged(filepath, lastWriteTime))
+                            // ファイル名とパスを取得
+                            std::string filename = entry.path().filename().string();
+                            std::string filepath = entry.path().string();
+                            
+                            // ファイルの更新時刻を取得（並列実行可能）
+                            auto lastWriteTime = entry.last_write_time();
+                            
+                            // パターンに一致するか確認（並列実行可能）
+                            std::smatch matches;
+                            if (std::regex_match(filename, matches, filePattern) && matches.size() >= 3)
                             {
-                                // インデックスにファイルを追加または更新
-                                bool processed = !fileIndex->hasFileChanged(filepath, lastWriteTime);
-                                fileIndex->addFile(filepath, run, fileNumber, lastWriteTime, processed);
+                                int run = std::stoi(matches[1].str());
+                                int fileNumber = std::stoi(matches[2].str());
+                                
+                                // インデックスへのアクセスは排他制御が必要
+                                {
+                                    std::lock_guard<std::mutex> lock(indexMutex);
+                                    
+                                    // ファイルが変更されているか確認
+                                    if (fileIndex->hasFileChanged(filepath, lastWriteTime))
+                                    {
+                                        // インデックスにファイルを追加または更新
+                                        bool processed = !fileIndex->hasFileChanged(filepath, lastWriteTime);
+                                        fileIndex->addFile(filepath, run, fileNumber, lastWriteTime, processed);
+                                    }
+                                }
+                                
+                                matchedCount++;
+                            }
+                            
+                            processedCount++;
+                            
+                            // 進捗表示（10%刻み）
+                            if (processedCount % (entries.size() / 10 + 1) == 0 && entries.size() > 10000)
+                            {
+                                size_t progress = (processedCount * 100) / entries.size();
+                                LOG("Scan progress: " << progress << "% (" << processedCount << "/" << entries.size() << " files)");
                             }
                         }
-                        
-                        matchedCount++;
+                        catch (const std::exception &e)
+                        {
+                            // 個別ファイルのエラーは記録して継続
+                            LOG("Error processing file in parallel scan: " << e.what());
+                        }
                     }
-                    
-                    processedCount++;
-                    
-                    // 進捗表示（10%刻み）
-                    if (processedCount % (entries.size() / 10 + 1) == 0 && entries.size() > 10000)
-                    {
-                        size_t progress = (processedCount * 100) / entries.size();
-                        LOG("Scan progress: " << progress << "% (" << processedCount << "/" << entries.size() << " files)");
-                    }
+                }
+                catch (const std::exception &e)
+                {
+                    LOG("Fatal error in parallel scan thread: " << e.what());
+                }
+                catch (...)
+                {
+                    LOG("Unknown fatal error in parallel scan thread");
                 }
             });
         }
@@ -236,11 +279,6 @@ void IndexedDirectoryMonitor::performIncrementalScan()
             }
         }
 
-        if (newFilesFound > 0 || updatedFiles > 0)
-        {
-            LOG("Incremental scan: " << newFilesFound << " new files, " 
-                << updatedFiles << " updated files");
-        }
     }
     catch (const fs::filesystem_error &e)
     {
@@ -341,18 +379,29 @@ void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
         return;
     }
 
-    // スレッドプール
-    std::vector<std::thread> threads;
+    // futureプール（非ブロッキングで完了検出可能）
+    std::vector<std::future<bool>> futures;
 
     // Ctrl+C 処理
     if (stopOnInterrupt)
     {
         std::thread interruptThread([&running]()
                                     {
-            LOG("Press Enter to stop the monitor...");
-            std::cin.get();
-            running = false;
-            LOG("Stopping monitor..."); });
+            try
+            {
+                LOG("Press Enter to stop the monitor...");
+                std::cin.get();
+                running = false;
+                LOG("Stopping monitor...");
+            }
+            catch (const std::exception &e)
+            {
+                LOG("Error in interrupt thread: " << e.what());
+            }
+            catch (...)
+            {
+                LOG("Unknown error in interrupt thread");
+            } });
         interruptThread.detach();
     }
 
@@ -361,13 +410,26 @@ void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
     {
         try
         {
-            // 完了したスレッドをクリーンアップ（並列枠を空ける）
-            for (auto it = threads.begin(); it != threads.end();)
+            // 完了したタスクをクリーンアップ（非ブロッキング、並列枠を空ける）
+            for (auto it = futures.begin(); it != futures.end();)
             {
-                if (it->joinable())
+                // wait_for(0)で非ブロッキングに完了をチェック
+                if (it->wait_for(std::chrono::seconds(0)) == std::future_status::ready)
                 {
-                    it->join();
-                    it = threads.erase(it);
+                    // 結果を取得してエラー処理
+                    try
+                    {
+                        bool result = it->get();
+                        if (!result)
+                        {
+                            LOG("Warning: Task completed with error");
+                        }
+                    }
+                    catch (const std::exception &e)
+                    {
+                        LOG("Exception in task: " << e.what());
+                    }
+                    it = futures.erase(it);
                 }
                 else
                 {
@@ -377,7 +439,7 @@ void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
 
             // 並列処理枠が空いている限り、新しいセットを取得して処理
             bool processedAny = false;
-            while (threads.size() < static_cast<size_t>(maxProcesses))
+            while (futures.size() < static_cast<size_t>(maxProcesses))
             {
                 // インデックスから直接次の完全なファイルセットを取得
                 FileSet fileSet;
@@ -411,8 +473,9 @@ void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
                 // 処理開始前に即座に処理済みとしてマーク（重複検出を防ぐ）
                 dirMonitor.markFileSetProcessed(fileSet);
 
-                // 新しいスレッドで処理（maxThreads、lz4Accelerationを渡す）
-                threads.emplace_back(processFileSet, fileSet, outputDir, deleteAfter, maxThreads, lz4Acceleration);
+                // 新しいタスクを非同期で起動（std::asyncで真の並列処理）
+                futures.emplace_back(std::async(std::launch::async, processFileSet, 
+                                               fileSet, outputDir, deleteAfter, maxThreads, lz4Acceleration));
                 processedAny = true;
             }
 
@@ -430,13 +493,22 @@ void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
         }
     }
 
-    // 残りのスレッドが完了するのを待つ
+    // 残りのタスクが完了するのを待つ
     LOG("Waiting for remaining tasks to complete...");
-    for (auto &thread : threads)
+    for (auto &future : futures)
     {
-        if (thread.joinable())
+        try
         {
-            thread.join();
+            // 各タスクの完了を待ち、結果を取得
+            bool result = future.get();
+            if (!result)
+            {
+                LOG("Warning: Final task completed with error");
+            }
+        }
+        catch (const std::exception &e)
+        {
+            LOG("Exception in final task: " << e.what());
         }
     }
 

@@ -94,9 +94,18 @@ static void readFileWorker(const std::vector<std::string>& filesToRead,
 
                 // データを読み込む
                 result.data.resize(fileSize);
-                if (file.read(result.data.data(), fileSize))
+                file.read(result.data.data(), fileSize);
+                
+                // 実際に読み込んだバイト数を確認（短い読み取り検出）
+                std::streamsize bytesRead = file.gcount();
+                if (bytesRead == fileSize)
                 {
                     result.success = true;
+                }
+                else
+                {
+                    LOG("Warning: Short read on " << filesToRead[i] 
+                        << " - expected " << fileSize << " bytes, got " << bytesRead << " bytes");
                 }
             }
         }

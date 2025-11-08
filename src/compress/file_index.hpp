@@ -17,10 +17,14 @@ private:
     {
         int run;
         int fileNumber;
-        char filePath[512];              // 固定サイズパス
-        fs::file_time_type lastModified; // 最終更新時刻
-        bool processed;                  // 処理済みフラグ
+        char filePath[512];      // 固定サイズパス
+        int64_t lastModifiedTime; // 最終更新時刻（エポック秒、ポータブル）
+        bool processed;          // 処理済みフラグ
     };
+    
+    // file_time_type <-> int64_t 変換ヘルパー
+    static int64_t fileTimeToInt64(const fs::file_time_type &ftime);
+    static fs::file_time_type int64ToFileTime(int64_t timestamp);
 
     std::string indexFilePath;
     std::vector<IndexEntry> entries;
