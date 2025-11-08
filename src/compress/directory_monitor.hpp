@@ -48,7 +48,7 @@ public:
     std::vector<FileSet> getLatestFileSets(bool waitForNew = false);
     bool isDataAvailable();
     void markDataProcessed();
-    void markFileSetProcessed(const FileSet &processedSet);
+    void markFileSetProcessed(const FileSet &processedSet, bool processed = true);
     size_t getIndexSize() const;
     
     // インデックスから直接次の完全なセットを取得（並列処理用）

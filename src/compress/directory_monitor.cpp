@@ -330,14 +330,14 @@ void IndexedDirectoryMonitor::markDataProcessed()
     newDataAvailable = false;
 }
 
-void IndexedDirectoryMonitor::markFileSetProcessed(const FileSet &processedSet)
+void IndexedDirectoryMonitor::markFileSetProcessed(const FileSet &processedSet, bool processed)
 {
     for (const auto &filepath : processedSet.files)
     {
-        fileIndex->markProcessed(filepath);
+        fileIndex->markProcessed(filepath, processed);
     }
 
-    fileIndex->markFileSetProcessed(processedSet.run, processedSet.setNumber, task.setSize);
+    fileIndex->markFileSetProcessed(processedSet.run, processedSet.setNumber, task.setSize, processed);
 }
 
 size_t IndexedDirectoryMonitor::getIndexSize() const
@@ -380,7 +380,7 @@ void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
     }
 
     // futureプール（非ブロッキングで完了検出可能）
-    std::vector<std::future<bool>> futures;
+    std::vector<std::future<std::pair<FileSet, bool>>> futures;
 
     // Ctrl+C 処理
     if (stopOnInterrupt)
@@ -419,10 +419,15 @@ void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
                     // 結果を取得してエラー処理
                     try
                     {
-                        bool result = it->get();
-                        if (!result)
+                        auto result = it->get();
+                        const FileSet &completedSet = result.first;
+                        bool ok = result.second;
+                        if (!ok)
                         {
-                            LOG("Warning: Task completed with error");
+                            LOG("Warning: Task completed with error, reverting processed flag: run " 
+                                << completedSet.run << ", set " << completedSet.setNumber);
+                            // 失敗時は未処理に戻す
+                            dirMonitor.markFileSetProcessed(completedSet, false);
                         }
                     }
                     catch (const std::exception &e)
@@ -474,8 +479,10 @@ void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
                 dirMonitor.markFileSetProcessed(fileSet);
 
                 // 新しいタスクを非同期で起動（std::asyncで真の並列処理）
-                futures.emplace_back(std::async(std::launch::async, processFileSet, 
-                                               fileSet, outputDir, deleteAfter, maxThreads, lz4Acceleration));
+                futures.emplace_back(std::async(std::launch::async, [=]() {
+                    bool ok = processFileSet(fileSet, outputDir, deleteAfter, maxThreads, lz4Acceleration);
+                    return std::make_pair(fileSet, ok);
+                }));
                 processedAny = true;
             }
 
@@ -500,10 +507,15 @@ void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
         try
         {
             // 各タスクの完了を待ち、結果を取得
-            bool result = future.get();
-            if (!result)
+            auto result = future.get();
+            const FileSet &completedSet = result.first;
+            bool ok = result.second;
+            if (!ok)
             {
-                LOG("Warning: Final task completed with error");
+                LOG("Warning: Final task completed with error, reverting processed flag: run " 
+                    << completedSet.run << ", set " << completedSet.setNumber);
+                // 失敗時は未処理に戻す
+                dirMonitor.markFileSetProcessed(completedSet, false);
             }
         }
         catch (const std::exception &e)
