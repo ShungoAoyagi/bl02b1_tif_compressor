@@ -19,9 +19,9 @@ int main(int argc, char *argv[])
     const bool stopOnInterrupt = false; // Never stop on Enter key
 
     std::cout << "=== bl02b1_tif_compressor ===" << std::endl;
-    std::cout << "Version 0.1.0" << std::endl;
+    std::cout << "Version 0.2.0" << std::endl;
     std::cout << "Author: Shungo AOYAGI" << std::endl;
-    std::cout << "Date: 2025-03-27" << std::endl;
+    std::cout << "Date: 2025-11-08" << std::endl;
     std::cout << "If you have any questions, please contact me at aoyagi-shungo011@g.ecc.u-tokyo.ac.jp" << std::endl;
 
     // Get user input
