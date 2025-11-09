@@ -228,7 +228,6 @@ std::vector<FileEntry> decompressLZ4Archive(const std::string& lz4FilePath)
             entries.push_back(std::move(entry));
         }
         
-        std::cout << "Successfully decompressed " << entries.size() << " files from " << lz4FilePath << std::endl;
     }
     catch (const std::exception& e)
     {
