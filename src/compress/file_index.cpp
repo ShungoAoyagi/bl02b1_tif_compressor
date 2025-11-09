@@ -25,8 +25,8 @@ fs::file_time_type MemoryMappedFileIndex::int64ToFileTime(int64_t timestamp)
     return fileTime;
 }
 
-MemoryMappedFileIndex::MemoryMappedFileIndex(const std::string &basePath)
-    : indexFilePath(basePath + "/.file_index.bin"), modified(false)
+MemoryMappedFileIndex::MemoryMappedFileIndex(const std::string &basePath, int setSize)
+    : indexFilePath(basePath + "/.file_index.bin"), modified(false), setSize(setSize)
 {
     loadIndex();
 }
@@ -39,36 +39,39 @@ MemoryMappedFileIndex::~MemoryMappedFileIndex()
     }
 }
 
+TaskKey MemoryMappedFileIndex::calculateTaskKey(int run, int fileNumber) const
+{
+    TaskKey key;
+    key.run = run;
+    key.setNumber = ((fileNumber - 1) / setSize) * setSize + 1;
+    return key;
+}
+
 void MemoryMappedFileIndex::addFile(const std::string &path, int run, int fileNumber,
                                     const fs::file_time_type &modTime, bool isProcessed)
 {
-    // パスマップでエントリを検索
-    auto it = pathToIndexMap.find(path);
-
-    if (it != pathToIndexMap.end())
+    // TaskKeyを計算
+    TaskKey taskKey = calculateTaskKey(run, fileNumber);
+    
+    // pathKeyMapを更新
+    pathKeyMap[path] = taskKey;
+    
+    // fileModTimeMapを更新
+    fileModTimeMap[path] = fileTimeToInt64(modTime);
+    
+    // FileSetを取得または作成
+    FileSet &fileSet = fileSetMap[taskKey];
+    fileSet.run = taskKey.run;
+    fileSet.setNumber = taskKey.setNumber;
+    fileSet.processed = isProcessed;
+    
+    // ファイルを追加
+    fileSet.files.insert(path);
+    
+    // firstFileを設定（setNumberと同じファイル番号）
+    if (fileNumber == taskKey.setNumber)
     {
-        // 既存のエントリを更新
-        auto &entry = entries[it->second];
-        entry.run = run;
-        entry.fileNumber = fileNumber;
-        entry.lastModifiedTime = fileTimeToInt64(modTime); // int64_tに変換して保存
-        entry.processed = isProcessed;
-    }
-    else
-    {
-        // 新しいエントリを追加
-        IndexEntry newEntry;
-        newEntry.run = run;
-        newEntry.fileNumber = fileNumber;
-        strncpy(newEntry.filePath, path.c_str(), sizeof(newEntry.filePath) - 1);
-        newEntry.filePath[sizeof(newEntry.filePath) - 1] = '\0';
-        newEntry.lastModifiedTime = fileTimeToInt64(modTime); // int64_tに変換して保存
-        newEntry.processed = isProcessed;
-
-        // エントリを追加
-        size_t index = entries.size();
-        entries.push_back(newEntry);
-        pathToIndexMap[path] = index;
+        fileSet.firstFile = path;
     }
 
     modified = true;
@@ -76,12 +79,12 @@ void MemoryMappedFileIndex::addFile(const std::string &path, int run, int fileNu
 
 bool MemoryMappedFileIndex::hasFileChanged(const std::string &path, const fs::file_time_type &currentModTime)
 {
-    auto it = pathToIndexMap.find(path);
-    if (it != pathToIndexMap.end())
+    auto it = fileModTimeMap.find(path);
+    if (it != fileModTimeMap.end())
     {
-        // インデックス内に存在すれば、更新時刻を比較（int64_tに変換して比較）
+        // インデックス内に存在すれば、更新時刻を比較
         int64_t currentTime = fileTimeToInt64(currentModTime);
-        return entries[it->second].lastModifiedTime != currentTime;
+        return it->second != currentTime;
     }
     // インデックスに存在しなければ、変更あり（新規ファイル）
     return true;
@@ -89,155 +92,112 @@ bool MemoryMappedFileIndex::hasFileChanged(const std::string &path, const fs::fi
 
 void MemoryMappedFileIndex::markProcessed(const std::string &path, bool processed)
 {
-    auto it = pathToIndexMap.find(path);
-    if (it != pathToIndexMap.end())
+    // pathKeyMapからTaskKeyを取得
+    auto keyIt = pathKeyMap.find(path);
+    if (keyIt != pathKeyMap.end())
     {
-        entries[it->second].processed = processed;
-        modified = true;
-    }
-}
-
-void MemoryMappedFileIndex::markFileSetProcessed(int run, int setNumber, int setSize, bool processed)
-{
-    for (auto &entry : entries)
-    {
-        if (entry.run == run &&
-            entry.fileNumber >= setNumber &&
-            entry.fileNumber < setNumber + setSize)
+        // FileSetのprocessedフラグを更新
+        auto setIt = fileSetMap.find(keyIt->second);
+        if (setIt != fileSetMap.end())
         {
-            entry.processed = processed;
+            setIt->second.processed = processed;
             modified = true;
         }
     }
 }
 
-std::string MemoryMappedFileIndex::findFilePath(int run, int fileNumber)
+void MemoryMappedFileIndex::markFileSetProcessed(const TaskKey &taskKey, bool processed)
 {
-    for (const auto &entry : entries)
+    auto it = fileSetMap.find(taskKey);
+    if (it != fileSetMap.end())
     {
-        if (entry.run == run && entry.fileNumber == fileNumber)
-        {
-            return entry.filePath;
-        }
+        it->second.processed = processed;
+        modified = true;
     }
-    return "";
 }
 
-std::vector<FileSet> MemoryMappedFileIndex::getAllFileSets(int setSize, bool includeProcessed)
+std::vector<FileSet> MemoryMappedFileIndex::getAllFileSets(bool includeProcessed)
 {
-    std::map<std::pair<int, int>, FileSet> fileSets;
-
-    for (const auto &entry : entries)
-    {
-        // 処理済みのファイルをスキップするオプション
-        if (!includeProcessed && entry.processed)
-            continue;
-
-        int setNumber = ((entry.fileNumber - 1) / setSize) * setSize + 1;
-        auto key = std::make_pair(entry.run, setNumber);
-
-        if (fileSets.find(key) == fileSets.end())
-        {
-            FileSet newSet;
-            newSet.run = entry.run;
-            newSet.setNumber = setNumber;
-            fileSets[key] = newSet;
-        }
-
-        fileSets[key].files.insert(entry.filePath);
-
-        if (entry.fileNumber == setNumber)
-        {
-            fileSets[key].firstFile = entry.filePath;
-        }
-    }
-
     std::vector<FileSet> result;
-    for (auto &pair : fileSets)
+    
+    for (const auto &pair : fileSetMap)
     {
-        result.push_back(pair.second);
+        const FileSet &fileSet = pair.second;
+        
+        // 処理済みのセットをスキップするオプション
+        if (!includeProcessed && fileSet.processed)
+            continue;
+        
+        result.push_back(fileSet);
     }
-
+    
     return result;
 }
 
-bool MemoryMappedFileIndex::buildFileSet(int run, int setNumber, int setSize, FileSet &outFileSet)
+bool MemoryMappedFileIndex::getFileSet(const TaskKey &taskKey, FileSet &outFileSet)
 {
-    // 指定されたrun/setNumberの範囲にあるファイルのみを収集
-    FileSet fileSet;
-    fileSet.run = run;
-    fileSet.setNumber = setNumber;
-
-    int startFileNumber = setNumber;
-    int endFileNumber = setNumber + setSize - 1;
-
-    // エントリをスキャンして該当するファイルを収集
-    for (const auto &entry : entries)
+    // O(log N) または O(1) でFileSetを取得
+    auto it = fileSetMap.find(taskKey);
+    if (it != fileSetMap.end())
     {
-        if (entry.run == run &&
-            entry.fileNumber >= startFileNumber &&
-            entry.fileNumber <= endFileNumber)
-        {
-            fileSet.files.insert(entry.filePath);
-
-            // firstFileを設定
-            if (entry.fileNumber == setNumber)
-            {
-                fileSet.firstFile = entry.filePath;
-            }
-        }
-    }
-
-    // セットが完全であるかチェック
-    if (fileSet.files.size() >= static_cast<size_t>(setSize))
-    {
-        outFileSet = fileSet;
+        outFileSet = it->second;
         return true;
     }
-
     return false;
 }
 
 void MemoryMappedFileIndex::clear()
 {
-    entries.clear();
-    pathToIndexMap.clear();
+    fileSetMap.clear();
+    pathKeyMap.clear();
+    fileModTimeMap.clear();
     modified = true;
 }
 
 void MemoryMappedFileIndex::cleanup()
 {
-    size_t initialSize = entries.size();
-
-    std::vector<size_t> indicesToRemove;
-
-    for (size_t i = 0; i < entries.size(); i++)
+    size_t initialSize = fileModTimeMap.size();
+    
+    std::vector<std::string> pathsToRemove;
+    
+    // 存在しないファイルを検出
+    for (const auto &pair : fileModTimeMap)
     {
-        if (!fs::exists(entries[i].filePath))
+        if (!fs::exists(pair.first))
         {
-            indicesToRemove.push_back(i);
+            pathsToRemove.push_back(pair.first);
         }
     }
-
-    // 降順でインデックスを削除（昇順だとインデックスがずれる）
-    std::sort(indicesToRemove.begin(), indicesToRemove.end(), std::greater<size_t>());
-
-    for (size_t idx : indicesToRemove)
+    
+    // 削除処理
+    for (const std::string &path : pathsToRemove)
     {
-        // パスマップから削除
-        pathToIndexMap.erase(entries[idx].filePath);
-
-        // 最後の要素と交換して削除（高速）
-        if (idx < entries.size() - 1)
+        // pathKeyMapから削除
+        auto keyIt = pathKeyMap.find(path);
+        if (keyIt != pathKeyMap.end())
         {
-            std::swap(entries[idx], entries.back());
-            // パスマップも更新
-            pathToIndexMap[entries[idx].filePath] = idx;
+            TaskKey taskKey = keyIt->second;
+            pathKeyMap.erase(keyIt);
+            
+            // FileSetからファイルを削除
+            auto setIt = fileSetMap.find(taskKey);
+            if (setIt != fileSetMap.end())
+            {
+                setIt->second.files.erase(path);
+                
+                // FileSetが空になったら削除
+                if (setIt->second.files.empty())
+                {
+                    fileSetMap.erase(setIt);
+                }
+            }
         }
-        entries.pop_back();
+        
+        // fileModTimeMapから削除
+        fileModTimeMap.erase(path);
     }
-
-    if (initialSize != entries.size())
+    
+    if (initialSize != fileModTimeMap.size())
     {
         modified = true;
     }
@@ -245,7 +205,7 @@ void MemoryMappedFileIndex::cleanup()
 
 size_t MemoryMappedFileIndex::size() const
 {
-    return entries.size();
+    return fileModTimeMap.size();
 }
 
 void MemoryMappedFileIndex::loadIndex()
@@ -254,29 +214,65 @@ void MemoryMappedFileIndex::loadIndex()
     if (!file)
         return;
 
-    // インデックスのサイズを取得
-    file.seekg(0, std::ios::end);
-    size_t fileSize = file.tellg();
-    file.seekg(0, std::ios::beg);
-
-    // ファイルサイズが妥当かチェック
-    if (fileSize % sizeof(IndexEntry) != 0)
+    try
     {
-        LOG("Invalid index file size");
-        return;
+        // セット数を読み込み
+        uint32_t numSets = 0;
+        file.read(reinterpret_cast<char *>(&numSets), sizeof(numSets));
+        if (!file)
+            return;
+        
+        // 各セットを読み込み
+        for (uint32_t i = 0; i < numSets; ++i)
+        {
+            // TaskKeyを読み込み
+            TaskKey taskKey;
+            file.read(reinterpret_cast<char *>(&taskKey.run), sizeof(taskKey.run));
+            file.read(reinterpret_cast<char *>(&taskKey.setNumber), sizeof(taskKey.setNumber));
+            
+            // processedフラグを読み込み
+            bool processed;
+            file.read(reinterpret_cast<char *>(&processed), sizeof(processed));
+            
+            // ファイル数を読み込み
+            uint32_t numFiles = 0;
+            file.read(reinterpret_cast<char *>(&numFiles), sizeof(numFiles));
+            
+            // FileSetを作成
+            FileSet fileSet;
+            fileSet.run = taskKey.run;
+            fileSet.setNumber = taskKey.setNumber;
+            fileSet.processed = processed;
+            
+            // 各ファイルを読み込み
+            for (uint32_t j = 0; j < numFiles; ++j)
+            {
+                FileEntry entry;
+                file.read(reinterpret_cast<char *>(&entry), sizeof(entry));
+                
+                std::string path(entry.filePath);
+                fileSet.files.insert(path);
+                
+                // pathKeyMapとfileModTimeMapを更新
+                pathKeyMap[path] = taskKey;
+                fileModTimeMap[path] = entry.lastModifiedTime;
+                
+                // firstFileを設定（セットの最初のファイル）
+                if (fileSet.firstFile.empty())
+                {
+                    fileSet.firstFile = path;
+                }
+            }
+            
+            // fileSetMapに追加
+            fileSetMap[taskKey] = fileSet;
+        }
     }
-
-    // エントリ数を計算
-    size_t entryCount = fileSize / sizeof(IndexEntry);
-    entries.resize(entryCount);
-
-    // 一度にすべてのエントリを読み込み
-    file.read(reinterpret_cast<char *>(entries.data()), fileSize);
-
-    // アクセス用のマップを構築
-    for (size_t i = 0; i < entries.size(); i++)
+    catch (const std::exception &e)
     {
-        pathToIndexMap[entries[i].filePath] = i;
+        LOG("Error loading index: " << e.what());
+        // エラー時はクリア
+        clear();
     }
 }
 
@@ -289,8 +285,54 @@ void MemoryMappedFileIndex::saveIndex()
         return;
     }
 
-    // 一度にすべてのエントリを書き込み
-    file.write(reinterpret_cast<const char *>(entries.data()),
-               entries.size() * sizeof(IndexEntry));
+    try
+    {
+        // セット数を書き込み
+        uint32_t numSets = static_cast<uint32_t>(fileSetMap.size());
+        file.write(reinterpret_cast<const char *>(&numSets), sizeof(numSets));
+        
+        // 各セットを書き込み
+        for (const auto &setPair : fileSetMap)
+        {
+            const TaskKey &taskKey = setPair.first;
+            const FileSet &fileSet = setPair.second;
+            
+            // TaskKeyを書き込み
+            file.write(reinterpret_cast<const char *>(&taskKey.run), sizeof(taskKey.run));
+            file.write(reinterpret_cast<const char *>(&taskKey.setNumber), sizeof(taskKey.setNumber));
+            
+            // processedフラグを書き込み
+            file.write(reinterpret_cast<const char *>(&fileSet.processed), sizeof(fileSet.processed));
+            
+            // ファイル数を書き込み
+            uint32_t numFiles = static_cast<uint32_t>(fileSet.files.size());
+            file.write(reinterpret_cast<const char *>(&numFiles), sizeof(numFiles));
+            
+            // 各ファイルを書き込み
+            for (const std::string &path : fileSet.files)
+            {
+                FileEntry entry;
+                strncpy(entry.filePath, path.c_str(), sizeof(entry.filePath) - 1);
+                entry.filePath[sizeof(entry.filePath) - 1] = '\0';
+                
+                // fileModTimeMapから更新時刻を取得
+                auto timeIt = fileModTimeMap.find(path);
+                if (timeIt != fileModTimeMap.end())
+                {
+                    entry.lastModifiedTime = timeIt->second;
+                }
+                else
+                {
+                    entry.lastModifiedTime = 0;
+                }
+                
+                file.write(reinterpret_cast<const char *>(&entry), sizeof(entry));
+            }
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOG("Error saving index: " << e.what());
+    }
 }
 

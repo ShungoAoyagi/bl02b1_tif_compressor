@@ -22,8 +22,8 @@ IndexedDirectoryMonitor::IndexedDirectoryMonitor(const std::string &watchDir, co
     task.basePattern = basePattern;
     task.setSize = setSize;
 
-    // メモリマップドインデックスを初期化
-    fileIndex = std::make_unique<MemoryMappedFileIndex>(watchDir);
+    // メモリマップドインデックスを初期化（setSize付き）
+    fileIndex = std::make_unique<MemoryMappedFileIndex>(watchDir, setSize);
 
     // 正規表現パターン作成
     filePattern = std::regex(basePattern.substr(0, basePattern.find("_##_")) +
@@ -217,7 +217,7 @@ void IndexedDirectoryMonitor::performFullScan()
         LOG("Enqueuing complete file sets to task queue...");
         
         // getAllFileSetsで未処理のセットを取得してキューに積む
-        std::vector<FileSet> allSets = fileIndex->getAllFileSets(task.setSize, false);
+        std::vector<FileSet> allSets = fileIndex->getAllFileSets(false);
         
         size_t enqueuedCount = 0;
         for (const auto &fileSet : allSets)
@@ -254,7 +254,7 @@ void IndexedDirectoryMonitor::performIncrementalScan()
         // 新規/変更されたファイルのみを効率的にチェック
         size_t newFilesFound = 0;
         size_t updatedFiles = 0;
-        std::set<std::pair<int, int>> updatedSets; // 更新されたセットを記録
+        std::set<TaskKey> updatedSets; // 更新されたセットを記録
 
         for (const auto &entry : fs::directory_iterator(task.watchDir))
         {
@@ -284,9 +284,11 @@ void IndexedDirectoryMonitor::performIncrementalScan()
                     // インデックスを更新（未処理としてマーク）
                     fileIndex->addFile(filepath, run, fileNumber, lastWriteTime, false);
                     
-                    // このファイルが属するセットを記録
-                    int setNumber = ((fileNumber - 1) / task.setSize) * task.setSize + 1;
-                    updatedSets.insert(std::make_pair(run, setNumber));
+                    // このファイルが属するTaskKeyを記録
+                    TaskKey taskKey;
+                    taskKey.run = run;
+                    taskKey.setNumber = ((fileNumber - 1) / task.setSize) * task.setSize + 1;
+                    updatedSets.insert(taskKey);
                     
                     newFilesFound++;
                 }
@@ -310,13 +312,17 @@ void IndexedDirectoryMonitor::performIncrementalScan()
         // 更新されたセットが完全になったかチェックしてキューに積む
         if (!updatedSets.empty())
         {
-            for (const auto &setKey : updatedSets)
+            for (const auto &taskKey : updatedSets)
             {
                 FileSet testSet;
-                if (fileIndex->buildFileSet(setKey.first, setKey.second, task.setSize, testSet))
+                if (fileIndex->getFileSet(taskKey, testSet))
                 {
-                    // 完全なセットになったのでキューに追加
-                    enqueueTask(setKey.first, setKey.second);
+                    // 完全なセット（task.setSizeファイル）になったかチェック
+                    if (testSet.files.size() >= static_cast<size_t>(task.setSize))
+                    {
+                        // 完全なセットになったのでキューに追加
+                        enqueueTask(taskKey.run, taskKey.setNumber);
+                    }
                 }
             }
         }
@@ -374,12 +380,13 @@ void IndexedDirectoryMonitor::markDataProcessed()
 
 void IndexedDirectoryMonitor::markFileSetProcessed(const FileSet &processedSet, bool processed)
 {
-    for (const auto &filepath : processedSet.files)
-    {
-        fileIndex->markProcessed(filepath, processed);
-    }
-
-    fileIndex->markFileSetProcessed(processedSet.run, processedSet.setNumber, task.setSize, processed);
+    // TaskKeyを作成
+    TaskKey taskKey;
+    taskKey.run = processedSet.run;
+    taskKey.setNumber = processedSet.setNumber;
+    
+    // FileSet全体を処理済みとしてマーク
+    fileIndex->markFileSetProcessed(taskKey, processed);
 }
 
 size_t IndexedDirectoryMonitor::getIndexSize() const
@@ -390,7 +397,10 @@ size_t IndexedDirectoryMonitor::getIndexSize() const
 void IndexedDirectoryMonitor::enqueueTask(int run, int setNumber)
 {
     std::lock_guard<std::mutex> lock(queueMutex);
-    taskQueue.push(std::make_pair(run, setNumber));
+    TaskKey taskKey;
+    taskKey.run = run;
+    taskKey.setNumber = setNumber;
+    taskQueue.push(taskKey);
     queueCV.notify_one();
 }
 
@@ -525,14 +535,11 @@ void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
                     break; // ループを抜ける
                 }
 
-                int run = taskKey.first;
-                int setNum = taskKey.second;
-
-                // FileSetをオンデマンドで構築
+                // FileSetをO(1)で取得
                 FileSet fileSet;
-                if (!dirMonitor.getIndex()->buildFileSet(run, setNum, setSize, fileSet))
+                if (!dirMonitor.getIndex()->getFileSet(taskKey, fileSet))
                 {
-                    LOG("Failed to build FileSet for: run " << run << ", set " << setNum);
+                    LOG("Failed to get FileSet for: run " << taskKey.run << ", set " << taskKey.setNumber);
                     continue; // 次のキーへ
                 }
 

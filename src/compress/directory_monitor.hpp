@@ -13,9 +13,6 @@
 #include <queue>
 #include <atomic>
 
-// 軽量なタスクキー（Run, SetNumber）
-using TaskKey = std::pair<int, int>;
-
 // メモリマップドインデックスを使用したディレクトリモニター
 class IndexedDirectoryMonitor
 {
