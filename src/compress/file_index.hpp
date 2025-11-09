@@ -59,9 +59,9 @@ public:
     // すべてのファイルセットを取得 (処理済みのセットはオプションでフィルタリング)
     std::vector<FileSet> getAllFileSets(int setSize, bool includeProcessed = true);
 
-    // 次の完全なファイルセットを1つだけ取得（未処理のみ、効率的に1セットずつ処理）
-    // 戻り値: 完全なセットが見つかった場合true、見つからなかった場合false
-    bool getNextCompleteFileSet(int setSize, FileSet &outFileSet);
+    // 指定されたrun/setNumberのFileSetをオンデマンドで構築（Producer-Consumer用）
+    // 戻り値: セットの構築に成功した場合true、失敗した場合false
+    bool buildFileSet(int run, int setNumber, int setSize, FileSet &outFileSet);
 
     // インデックスの内容をクリア
     void clear();

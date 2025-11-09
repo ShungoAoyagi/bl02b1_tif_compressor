@@ -10,6 +10,11 @@
 #include <condition_variable>
 #include <regex>
 #include <memory>
+#include <queue>
+#include <atomic>
+
+// 軽量なタスクキー（Run, SetNumber）
+using TaskKey = std::pair<int, int>;
 
 // メモリマップドインデックスを使用したディレクトリモニター
 class IndexedDirectoryMonitor
@@ -36,10 +41,19 @@ private:
     // パターンマッチング用の正規表現
     std::regex filePattern;
 
+    // Producer-Consumerモデル用のタスクキュー
+    std::queue<TaskKey> taskQueue;
+    std::mutex queueMutex;
+    std::condition_variable queueCV;
+    std::atomic<bool> producerFinishedScan; // 初回スキャン完了フラグ
+
     void scannerWorker();
     void performFullScan();
     void performIncrementalScan();
     void updateFileSets();
+
+    // スキャナーが呼び出すヘルパー（タスクをキューに追加）
+    void enqueueTask(int run, int setNumber);
 
 public:
     IndexedDirectoryMonitor(const std::string &watchDir, const std::string &basePattern, int setSize);
@@ -51,8 +65,11 @@ public:
     void markFileSetProcessed(const FileSet &processedSet, bool processed = true);
     size_t getIndexSize() const;
     
-    // インデックスから直接次の完全なセットを取得（並列処理用）
-    bool getNextCompleteFileSet(FileSet &outFileSet);
+    // メインスレッドが呼び出す新メソッド（キューからタスクキーを取得）
+    bool getNextTaskKey(TaskKey &outKey);
+
+    // メインループがFileIndexを直接叩けるようにする
+    MemoryMappedFileIndex* getIndex();
 };
 
 // メインの監視関数

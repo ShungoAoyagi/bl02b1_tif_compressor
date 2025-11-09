@@ -161,50 +161,40 @@ std::vector<FileSet> MemoryMappedFileIndex::getAllFileSets(int setSize, bool inc
     return result;
 }
 
-bool MemoryMappedFileIndex::getNextCompleteFileSet(int setSize, FileSet &outFileSet)
+bool MemoryMappedFileIndex::buildFileSet(int run, int setNumber, int setSize, FileSet &outFileSet)
 {
-    std::map<std::pair<int, int>, FileSet> fileSets;
+    // 指定されたrun/setNumberの範囲にあるファイルのみを収集
+    FileSet fileSet;
+    fileSet.run = run;
+    fileSet.setNumber = setNumber;
 
-    // 未処理のファイルのみを対象にファイルセットを構築
+    int startFileNumber = setNumber;
+    int endFileNumber = setNumber + setSize - 1;
+
+    // エントリをスキャンして該当するファイルを収集
     for (const auto &entry : entries)
     {
-        // 処理済みのファイルはスキップ
-        if (entry.processed)
-            continue;
-
-        int setNumber = ((entry.fileNumber - 1) / setSize) * setSize + 1;
-        auto key = std::make_pair(entry.run, setNumber);
-
-        if (fileSets.find(key) == fileSets.end())
+        if (entry.run == run &&
+            entry.fileNumber >= startFileNumber &&
+            entry.fileNumber <= endFileNumber)
         {
-            FileSet newSet;
-            newSet.run = entry.run;
-            newSet.setNumber = setNumber;
-            fileSets[key] = newSet;
-        }
+            fileSet.files.insert(entry.filePath);
 
-        fileSets[key].files.insert(entry.filePath);
-
-        if (entry.fileNumber == setNumber)
-        {
-            fileSets[key].firstFile = entry.filePath;
+            // firstFileを設定
+            if (entry.fileNumber == setNumber)
+            {
+                fileSet.firstFile = entry.filePath;
+            }
         }
     }
 
-    // 完全なセット（ファイル数がsetSize個）を優先度順に探す
-    // 優先順位: run番号の小さい順 → setNumber の小さい順
-    for (const auto &pair : fileSets)
+    // セットが完全であるかチェック
+    if (fileSet.files.size() >= static_cast<size_t>(setSize))
     {
-        const FileSet &fileSet = pair.second;
-        if (fileSet.files.size() >= static_cast<size_t>(setSize))
-        {
-            // 完全なセットを見つけた
-            outFileSet = fileSet;
-            return true;
-        }
+        outFileSet = fileSet;
+        return true;
     }
 
-    // 完全なセットが見つからなかった
     return false;
 }
 
