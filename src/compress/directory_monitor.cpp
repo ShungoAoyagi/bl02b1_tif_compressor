@@ -317,10 +317,10 @@ void IndexedDirectoryMonitor::performIncrementalScan()
                 FileSet testSet;
                 if (fileIndex->getFileSet(taskKey, testSet))
                 {
-                    // 完全なセット（task.setSizeファイル）になったかチェック
-                    if (testSet.files.size() >= static_cast<size_t>(task.setSize))
+                    // 完全なセット（task.setSizeファイル）かつ未処理の場合のみキューに追加
+                    if (testSet.files.size() >= static_cast<size_t>(task.setSize) && !testSet.processed)
                     {
-                        // 完全なセットになったのでキューに追加
+                        // enqueueTask内で重複チェックが行われるので安全
                         enqueueTask(taskKey.run, taskKey.setNumber);
                     }
                 }
@@ -400,7 +400,15 @@ void IndexedDirectoryMonitor::enqueueTask(int run, int setNumber)
     TaskKey taskKey;
     taskKey.run = run;
     taskKey.setNumber = setNumber;
+    
+    // 既にキューに積まれている場合は重複を避ける
+    if (enqueuedTasks.find(taskKey) != enqueuedTasks.end())
+    {
+        return; // 既にキューに存在するのでスキップ
+    }
+    
     taskQueue.push(taskKey);
+    enqueuedTasks.insert(taskKey);
     queueCV.notify_one();
 }
 
@@ -419,6 +427,10 @@ bool IndexedDirectoryMonitor::getNextTaskKey(TaskKey &outKey)
     {
         outKey = taskQueue.front();
         taskQueue.pop();
+        
+        // enqueuedTasksからも削除
+        enqueuedTasks.erase(outKey);
+        
         return true;
     }
     
