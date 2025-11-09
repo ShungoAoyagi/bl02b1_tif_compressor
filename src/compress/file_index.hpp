@@ -4,6 +4,7 @@
 #include "file_set.hpp"
 #include <string>
 #include <vector>
+#include <map>
 #include <unordered_map>
 #include <filesystem>
 
@@ -13,13 +14,11 @@ namespace fs = std::filesystem;
 class MemoryMappedFileIndex
 {
 private:
-    struct IndexEntry
+    // シリアライズ用の内部構造体
+    struct FileEntry
     {
-        int run;
-        int fileNumber;
         char filePath[512];      // 固定サイズパス
         int64_t lastModifiedTime; // 最終更新時刻（エポック秒、ポータブル）
-        bool processed;          // 処理済みフラグ
     };
     
     // file_time_type <-> int64_t 変換ヘルパー
@@ -27,17 +26,26 @@ private:
     static fs::file_time_type int64ToFileTime(int64_t timestamp);
 
     std::string indexFilePath;
-    std::vector<IndexEntry> entries;
     bool modified;
+    int setSize; // setSize を保持（TaskKey計算に必要）
 
-    // インデックスエントリへの高速アクセス用マップ
-    std::unordered_map<std::string, size_t> pathToIndexMap;
+    // セット中心のデータ構造
+    std::map<TaskKey, FileSet> fileSetMap;
+    
+    // ファイルパスから所属するTaskKeyを引くマップ
+    std::unordered_map<std::string, TaskKey> pathKeyMap;
+    
+    // ファイルパスと更新時刻を記録（変更検出用）
+    std::unordered_map<std::string, int64_t> fileModTimeMap;
 
     void loadIndex();
     void saveIndex();
+    
+    // TaskKeyを計算するヘルパー
+    TaskKey calculateTaskKey(int run, int fileNumber) const;
 
 public:
-    MemoryMappedFileIndex(const std::string &basePath);
+    MemoryMappedFileIndex(const std::string &basePath, int setSize);
     ~MemoryMappedFileIndex();
 
     // ファイルをインデックスに追加または更新
@@ -50,18 +58,15 @@ public:
     // 特定のファイルを処理済みとしてマーク
     void markProcessed(const std::string &path, bool processed = true);
 
-    // ファイルセット全体を処理済みとしてマーク
-    void markFileSetProcessed(int run, int setNumber, int setSize, bool processed = true);
-
-    // 特定のrun/fileNumberのファイルパスを検索
-    std::string findFilePath(int run, int fileNumber);
+    // ファイルセット全体を処理済みとしてマーク（TaskKeyを使用）
+    void markFileSetProcessed(const TaskKey &taskKey, bool processed = true);
 
     // すべてのファイルセットを取得 (処理済みのセットはオプションでフィルタリング)
-    std::vector<FileSet> getAllFileSets(int setSize, bool includeProcessed = true);
+    std::vector<FileSet> getAllFileSets(bool includeProcessed = true);
 
-    // 次の完全なファイルセットを1つだけ取得（未処理のみ、効率的に1セットずつ処理）
-    // 戻り値: 完全なセットが見つかった場合true、見つからなかった場合false
-    bool getNextCompleteFileSet(int setSize, FileSet &outFileSet);
+    // 指定されたTaskKeyのFileSetをO(1)で取得（Producer-Consumer用）
+    // 戻り値: セットの取得に成功した場合true、失敗した場合false
+    bool getFileSet(const TaskKey &taskKey, FileSet &outFileSet);
 
     // インデックスの内容をクリア
     void clear();
