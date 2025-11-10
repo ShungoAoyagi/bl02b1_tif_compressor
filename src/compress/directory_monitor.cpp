@@ -116,7 +116,6 @@ void IndexedDirectoryMonitor::performFullScan()
         // ステップ2: 並列処理
         const size_t numThreads = std::thread::hardware_concurrency();
         std::vector<std::thread> threads;
-        std::mutex indexMutex;  // fileIndexへのアクセスを保護
         std::atomic<size_t> processedCount(0);
         std::atomic<size_t> matchedCount(0);
         
@@ -131,7 +130,7 @@ void IndexedDirectoryMonitor::performFullScan()
             if (start >= entries.size())
                 break;
             
-            threads.emplace_back([this, &entries, start, end, &indexMutex, &processedCount, &matchedCount]()
+            threads.emplace_back([this, &entries, start, end, &processedCount, &matchedCount]()
             {
                 try
                 {
@@ -157,7 +156,7 @@ void IndexedDirectoryMonitor::performFullScan()
                                 
                                 // インデックスへのアクセスは排他制御が必要
                                 {
-                                    std::lock_guard<std::mutex> lock(indexMutex);
+                                    std::lock_guard<std::mutex> lock(index_mutex);
                                     
                                     // ファイルが変更されているか確認
                                     if (fileIndex->hasFileChanged(filepath, lastWriteTime))
@@ -278,11 +277,20 @@ void IndexedDirectoryMonitor::performIncrementalScan()
                 // ファイルの更新時刻を取得（例外が発生する可能性あり）
                 auto lastWriteTime = entry.last_write_time();
 
-                // ファイルが変更されているか確認（新規または更新）
-                if (fileIndex->hasFileChanged(filepath, lastWriteTime))
+                // ファイルが変更されているか確認（読み取り）をロックで保護
+                bool changed;
                 {
-                    // インデックスを更新（未処理としてマーク）
-                    fileIndex->addFile(filepath, run, fileNumber, lastWriteTime, false);
+                    std::lock_guard<std::mutex> lock(index_mutex);
+                    changed = fileIndex->hasFileChanged(filepath, lastWriteTime);
+                }
+
+                if (changed)
+                {
+                    // インデックスを更新（書き込み）をロックで保護
+                    {
+                        std::lock_guard<std::mutex> lock(index_mutex);
+                        fileIndex->addFile(filepath, run, fileNumber, lastWriteTime, false);
+                    }
                     
                     // このファイルが属するTaskKeyを記録
                     TaskKey taskKey;
@@ -315,7 +323,13 @@ void IndexedDirectoryMonitor::performIncrementalScan()
             for (const auto &taskKey : updatedSets)
             {
                 FileSet testSet;
-                if (fileIndex->getFileSet(taskKey, testSet))
+                bool found;
+                {
+                    std::lock_guard<std::mutex> lock(index_mutex);
+                    found = fileIndex->getFileSet(taskKey, testSet);
+                }
+                
+                if (found)
                 {
                     // 完全なセット（task.setSizeファイル）かつ未処理の場合のみキューに追加
                     if (testSet.files.size() >= static_cast<size_t>(task.setSize) && !testSet.processed)
@@ -385,8 +399,11 @@ void IndexedDirectoryMonitor::markFileSetProcessed(const FileSet &processedSet, 
     taskKey.run = processedSet.run;
     taskKey.setNumber = processedSet.setNumber;
     
-    // FileSet全体を処理済みとしてマーク
-    fileIndex->markFileSetProcessed(taskKey, processed);
+    // FileSet全体を処理済みとしてマーク（ロックで保護）
+    {
+        std::lock_guard<std::mutex> lock(index_mutex);
+        fileIndex->markFileSetProcessed(taskKey, processed);
+    }
 }
 
 size_t IndexedDirectoryMonitor::getIndexSize() const
@@ -438,9 +455,10 @@ bool IndexedDirectoryMonitor::getNextTaskKey(TaskKey &outKey)
     return false;
 }
 
-MemoryMappedFileIndex* IndexedDirectoryMonitor::getIndex()
+bool IndexedDirectoryMonitor::getFileSet(const TaskKey &taskKey, FileSet &outFileSet)
 {
-    return fileIndex.get();
+    std::lock_guard<std::mutex> lock(index_mutex);
+    return fileIndex->getFileSet(taskKey, outFileSet);
 }
 
 void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
@@ -547,9 +565,9 @@ void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
                     break; // ループを抜ける
                 }
 
-                // FileSetをO(1)で取得
+                // FileSetをO(1)で取得（スレッドセーフ）
                 FileSet fileSet;
-                if (!dirMonitor.getIndex()->getFileSet(taskKey, fileSet))
+                if (!dirMonitor.getFileSet(taskKey, fileSet))
                 {
                     LOG("Failed to get FileSet for: run " << taskKey.run << ", set " << taskKey.setNumber);
                     continue; // 次のキーへ

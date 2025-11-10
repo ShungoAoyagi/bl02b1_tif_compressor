@@ -35,6 +35,7 @@ private:
 
     // メモリマップドインデックス
     std::unique_ptr<MemoryMappedFileIndex> fileIndex;
+    std::mutex index_mutex; // fileIndex保護用のミューテックス
 
     // パターンマッチング用の正規表現
     std::regex filePattern;
@@ -67,8 +68,8 @@ public:
     // メインスレッドが呼び出す新メソッド（キューからタスクキーを取得）
     bool getNextTaskKey(TaskKey &outKey);
 
-    // メインループがFileIndexを直接叩けるようにする
-    MemoryMappedFileIndex* getIndex();
+    // スレッドセーフなFileSet取得メソッド
+    bool getFileSet(const TaskKey &taskKey, FileSet &outFileSet);
 };
 
 // メインの監視関数
