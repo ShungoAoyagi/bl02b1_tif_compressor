@@ -5,6 +5,7 @@
 #include "file_index.hpp"
 #include <string>
 #include <vector>
+#include <set>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -41,6 +42,7 @@ private:
 
     // Producer-Consumerモデル用のタスクキュー
     std::queue<TaskKey> taskQueue;
+    std::set<TaskKey> enqueuedTasks; // 既にキューに積まれているTaskKeyを追跡
     std::mutex queueMutex;
     std::condition_variable queueCV;
     std::atomic<bool> producerFinishedScan; // 初回スキャン完了フラグ

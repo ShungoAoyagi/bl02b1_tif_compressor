@@ -60,10 +60,18 @@ void MemoryMappedFileIndex::addFile(const std::string &path, int run, int fileNu
     fileModTimeMap[path] = fileTimeToInt64(modTime);
     
     // FileSetを取得または作成
+    auto it = fileSetMap.find(taskKey);
+    bool isNewSet = (it == fileSetMap.end());
+    
     FileSet &fileSet = fileSetMap[taskKey];
     fileSet.run = taskKey.run;
     fileSet.setNumber = taskKey.setNumber;
-    fileSet.processed = isProcessed;
+    
+    // 新規セットの場合のみprocessedフラグを設定、既存の場合は保持
+    if (isNewSet)
+    {
+        fileSet.processed = isProcessed;
+    }
     
     // ファイルを追加
     fileSet.files.insert(path);

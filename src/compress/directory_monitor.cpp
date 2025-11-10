@@ -417,7 +417,15 @@ void IndexedDirectoryMonitor::enqueueTask(int run, int setNumber)
     TaskKey taskKey;
     taskKey.run = run;
     taskKey.setNumber = setNumber;
+    
+    // 既にキューに積まれている場合は重複を避ける
+    if (enqueuedTasks.find(taskKey) != enqueuedTasks.end())
+    {
+        return; // 既にキューに存在するのでスキップ
+    }
+    
     taskQueue.push(taskKey);
+    enqueuedTasks.insert(taskKey);
     queueCV.notify_one();
 }
 
@@ -436,6 +444,10 @@ bool IndexedDirectoryMonitor::getNextTaskKey(TaskKey &outKey)
     {
         outKey = taskQueue.front();
         taskQueue.pop();
+        
+        // enqueuedTasksからも削除
+        enqueuedTasks.erase(outKey);
+        
         return true;
     }
     
