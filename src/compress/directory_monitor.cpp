@@ -15,15 +15,26 @@
 #include <atomic>
 #include <future>
 
-IndexedDirectoryMonitor::IndexedDirectoryMonitor(const std::string &watchDir, const std::string &basePattern, int setSize)
+IndexedDirectoryMonitor::IndexedDirectoryMonitor(const std::string &watchDir, const std::string &outputDir, const std::string &basePattern, int setSize)
     : running(true), newDataAvailable(false), producerFinishedScan(false)
 {
     task.watchDir = watchDir;
     task.basePattern = basePattern;
     task.setSize = setSize;
 
-    // メモリマップドインデックスを初期化（setSize付き）
-    fileIndex = std::make_unique<MemoryMappedFileIndex>(watchDir, setSize);
+    // 出力ディレクトリがなければ作成
+    try
+    {
+        fs::create_directories(outputDir);
+    }
+    catch (const std::exception &e)
+    {
+        LOG("Warning: Failed to create output directory: " << e.what());
+    }
+
+    // メモリマップドインデックスを初期化（outputディレクトリに保存）
+    std::string indexFilePath = outputDir + "/compressor_file_index.bin";
+    fileIndex = std::make_unique<MemoryMappedFileIndex>(indexFilePath, setSize);
 
     // 正規表現パターン作成
     filePattern = std::regex(basePattern.substr(0, basePattern.find("_##_")) +
@@ -406,6 +417,12 @@ void IndexedDirectoryMonitor::markFileSetProcessed(const FileSet &processedSet, 
     }
 }
 
+void IndexedDirectoryMonitor::saveIndexNow()
+{
+    std::lock_guard<std::mutex> lock(index_mutex);
+    fileIndex->saveIndex();
+}
+
 size_t IndexedDirectoryMonitor::getIndexSize() const
 {
     return fileIndex->size();
@@ -461,6 +478,11 @@ bool IndexedDirectoryMonitor::getFileSet(const TaskKey &taskKey, FileSet &outFil
     return fileIndex->getFileSet(taskKey, outFileSet);
 }
 
+void IndexedDirectoryMonitor::requeueFileSet(const FileSet &fileSet)
+{
+    enqueueTask(fileSet.run, fileSet.setNumber);
+}
+
 void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
                       const std::string &basePattern, int setSize, int pollInterval,
                       int maxThreads, int maxProcesses, int lz4Acceleration, bool deleteAfter, bool stopOnInterrupt)
@@ -476,9 +498,6 @@ void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
     // 削除キューを初期化
     deleteQueue = std::make_unique<FastDeleteQueue>();
 
-    // メモリマップドインデックスを使用するモニターを初期化
-    IndexedDirectoryMonitor dirMonitor(watchDir, basePattern, setSize);
-
     // 出力ディレクトリがなければ作成
     try
     {
@@ -490,8 +509,14 @@ void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
         return;
     }
 
+    // メモリマップドインデックスを使用するモニターを初期化
+    IndexedDirectoryMonitor dirMonitor(watchDir, outputDir, basePattern, setSize);
+
     // futureプール（非ブロッキングで完了検出可能）
     std::vector<std::future<std::pair<FileSet, bool>>> futures;
+
+    // 処理済みセット数のカウンター（100セットごとにインデックスを保存）
+    size_t processedSetCount = 0;
 
     // Ctrl+C 処理
     if (stopOnInterrupt)
@@ -539,6 +564,8 @@ void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
                                 << completedSet.run << ", set " << completedSet.setNumber);
                             // 失敗時は未処理に戻す
                             dirMonitor.markFileSetProcessed(completedSet, false);
+                            // 展開テスト失敗時など、圧縮待ちqueueの最後に戻す
+                            dirMonitor.requeueFileSet(completedSet);
                         }
                     }
                     catch (const std::exception &e)
@@ -603,6 +630,16 @@ void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
                     return std::make_pair(fileSet, ok);
                 }));
                 processedAny = true;
+                
+                // 処理済みセット数をカウント
+                processedSetCount++;
+                
+                // 100セットごとにインデックスを保存（強制終了対策）
+                if (processedSetCount % 100 == 0)
+                {
+                    dirMonitor.saveIndexNow();
+                    LOG("Index saved (processed " << processedSetCount << " sets)");
+                }
             }
 
             // セットを処理しなかった場合は少し待機
@@ -635,6 +672,8 @@ void monitorDirectory(const std::string &watchDir, const std::string &outputDir,
                     << completedSet.run << ", set " << completedSet.setNumber);
                 // 失敗時は未処理に戻す
                 dirMonitor.markFileSetProcessed(completedSet, false);
+                // 展開テスト失敗時など、圧縮待ちqueueの最後に戻す
+                dirMonitor.requeueFileSet(completedSet);
             }
         }
         catch (const std::exception &e)

@@ -25,15 +25,16 @@ fs::file_time_type MemoryMappedFileIndex::int64ToFileTime(int64_t timestamp)
     return fileTime;
 }
 
-MemoryMappedFileIndex::MemoryMappedFileIndex(const std::string &basePath, int setSize)
-    : indexFilePath(basePath + "/.file_index.bin"), modified(false), setSize(setSize)
+MemoryMappedFileIndex::MemoryMappedFileIndex(const std::string &indexFilePath, int setSize)
+    : indexFilePath(indexFilePath), modified(false), setSize(setSize)
 {
     loadIndex();
 }
 
 MemoryMappedFileIndex::~MemoryMappedFileIndex()
 {
-    if (modified)
+    // データがある場合は常に保存（modifiedフラグに関わらず）
+    if (modified || !fileSetMap.empty())
     {
         saveIndex();
     }
@@ -220,7 +221,10 @@ void MemoryMappedFileIndex::loadIndex()
 {
     std::ifstream file(indexFilePath, std::ios::binary);
     if (!file)
+    {
+        LOG("Index file not found (will be created on save): " << indexFilePath);
         return;
+    }
 
     try
     {
@@ -228,7 +232,10 @@ void MemoryMappedFileIndex::loadIndex()
         uint32_t numSets = 0;
         file.read(reinterpret_cast<char *>(&numSets), sizeof(numSets));
         if (!file)
+        {
+            LOG("Failed to read index file: " << indexFilePath);
             return;
+        }
         
         // 各セットを読み込み
         for (uint32_t i = 0; i < numSets; ++i)
@@ -275,6 +282,8 @@ void MemoryMappedFileIndex::loadIndex()
             // fileSetMapに追加
             fileSetMap[taskKey] = fileSet;
         }
+        
+        LOG("Successfully loaded index file: " << indexFilePath << " (" << numSets << " sets, " << fileModTimeMap.size() << " files)");
     }
     catch (const std::exception &e)
     {
@@ -289,7 +298,7 @@ void MemoryMappedFileIndex::saveIndex()
     std::ofstream file(indexFilePath, std::ios::binary);
     if (!file)
     {
-        LOG("Failed to save index file");
+        LOG("Failed to save index file: " << indexFilePath);
         return;
     }
 
@@ -337,6 +346,9 @@ void MemoryMappedFileIndex::saveIndex()
                 file.write(reinterpret_cast<const char *>(&entry), sizeof(entry));
             }
         }
+        
+        file.close();
+        LOG("Successfully saved index file: " << indexFilePath << " (" << numSets << " sets, " << fileModTimeMap.size() << " files)");
     }
     catch (const std::exception &e)
     {

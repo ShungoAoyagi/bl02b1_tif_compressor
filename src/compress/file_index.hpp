@@ -39,14 +39,16 @@ private:
     std::unordered_map<std::string, int64_t> fileModTimeMap;
 
     void loadIndex();
-    void saveIndex();
     
     // TaskKeyを計算するヘルパー
     TaskKey calculateTaskKey(int run, int fileNumber) const;
 
 public:
-    MemoryMappedFileIndex(const std::string &basePath, int setSize);
+    MemoryMappedFileIndex(const std::string &indexFilePath, int setSize);
     ~MemoryMappedFileIndex();
+
+    // インデックスを手動で保存（定期保存用）
+    void saveIndex();
 
     // ファイルをインデックスに追加または更新
     void addFile(const std::string &path, int run, int fileNumber,

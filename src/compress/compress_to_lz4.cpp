@@ -269,7 +269,31 @@ bool compressFilesToLZ4(const std::set<std::string>& files,
     
     double compressionRatio = (double)compressedSize / totalSize * 100.0;
 
-    // 元データのメモリ解放
+    // ---------- メモリ上で展開テスト（圧縮の整合性チェック） ----------
+    // 圧縮データが正しく展開できるかメモリ上でテスト
+    std::vector<char> testUncompressed(totalSize);
+    int testDecompressedSize = LZ4_decompress_safe(
+        compressed.data(),
+        testUncompressed.data(),
+        compressedSize,
+        static_cast<int>(totalSize)
+    );
+    
+    if (testDecompressedSize < 0 || static_cast<size_t>(testDecompressedSize) != totalSize)
+    {
+        LOG("Error: LZ4 decompression test failed in memory. Decompressed size: " 
+            << testDecompressedSize << ", Expected: " << totalSize);
+        return false;
+    }
+    
+    // 展開されたデータが元のデータと一致するか確認
+    if (std::memcmp(combinedData.data(), testUncompressed.data(), totalSize) != 0)
+    {
+        LOG("Error: Decompressed data does not match original data");
+        return false;
+    }
+
+    // 元データのメモリ解放（テスト完了後）
     combinedData.clear();
     combinedData.shrink_to_fit();
 

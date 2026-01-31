@@ -23,14 +23,14 @@ bool processFileSet(const FileSet &fileSet, const std::string &outputDir, bool d
             return true;
         }
 
-        // ---------- 並列ファイル読み込み + LZ4圧縮 ----------
+        // ---------- 並列ファイル読み込み + LZ4圧縮 + メモリ上展開テスト ----------
         // maxThreadsスレッドで1つのファイルセットを並列処理
+        // 圧縮の整合性はメモリ上で検証される（書き込み前）
         if (!compressFilesToLZ4(fileSet.files, outputPath, maxThreads, lz4Acceleration))
         {
-            LOG("Error: Failed to compress files to LZ4");
+            LOG("Error: Failed to compress files to LZ4 (or decompression test failed)");
             return false;
         }
-
         // 先頭ファイルを出力ディレクトリにコピー
         if (!fileSet.firstFile.empty())
         {
@@ -52,7 +52,7 @@ bool processFileSet(const FileSet &fileSet, const std::string &outputDir, bool d
             }
         }
 
-        // 元ファイルを削除 - 削除キューに追加（整合性チェック後のみ）
+        // 元ファイルを削除 - 削除キューに追加（展開テスト成功後のみ）
         if (deleteAfter)
         {
             // 削除タスクを削除キューに追加（すべてのファイルを削除）

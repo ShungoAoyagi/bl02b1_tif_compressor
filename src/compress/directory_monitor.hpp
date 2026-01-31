@@ -52,11 +52,8 @@ private:
     void performIncrementalScan();
     void updateFileSets();
 
-    // スキャナーが呼び出すヘルパー（タスクをキューに追加）
-    void enqueueTask(int run, int setNumber);
-
 public:
-    IndexedDirectoryMonitor(const std::string &watchDir, const std::string &basePattern, int setSize);
+    IndexedDirectoryMonitor(const std::string &watchDir, const std::string &outputDir, const std::string &basePattern, int setSize);
     ~IndexedDirectoryMonitor();
 
     std::vector<FileSet> getLatestFileSets(bool waitForNew = false);
@@ -70,6 +67,15 @@ public:
 
     // スレッドセーフなFileSet取得メソッド
     bool getFileSet(const TaskKey &taskKey, FileSet &outFileSet);
+    
+    // インデックスを手動で保存（強制終了対策）
+    void saveIndexNow();
+    
+    // タスクをキューに追加（スキャナーや再キューイング時に使用）
+    void enqueueTask(int run, int setNumber);
+    
+    // FileSetを圧縮待ちqueueの最後に戻す（展開テスト失敗時など）
+    void requeueFileSet(const FileSet &fileSet);
 };
 
 // メインの監視関数
